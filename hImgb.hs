@@ -46,8 +46,8 @@ addSagedPost hs idx po = hs { threads = map (\th ->
 -- -------------------------------------------------------------------------
 
 formatImage :: Maybe String -> Html
-formatImage Nothing = noHtml
-formatImage (Just l)= lnk (image ! [src (fth l)]) (l)
+formatImage Nothing  = noHtml
+formatImage (Just l) = lnk (image ! [src (fth l)]) l
 
 fth :: String -> String
 fth s = take (length s - 4) s ++ "s" ++ drop (length s - 4) s
@@ -82,13 +82,13 @@ formatThread t = hr +++
                  replyForm (show (eyde t)) +++
                  hr
 
-fiatImgB :: HState -> Html
-fiatImgB h = (thetitle (toHtml (ibtitle h))) +++
-             h1 (toHtml (ibtitle h)) +++ 
-             hr +++
-             replyForm "1" +++
-             (foldr ((+++).formatThread) noHtml $ threads h) +++
-             (p $ toHtml $ lnk "source" "hImgb.hs")
+renderimgb :: HState -> Html
+renderimgb h = (thetitle (toHtml (ibtitle h))) +++
+               h1 (toHtml (ibtitle h)) +++ 
+               hr +++
+               replyForm "1" +++
+               (foldr ((+++).formatThread) noHtml $ threads h) +++
+               (p $ toHtml $ lnk "source" "hImgb.hs")
 
 lnk txt hrf = anchor (toHtml txt) ! [href hrf]
 
@@ -100,6 +100,8 @@ makethumb file = do
     img <- case t of ".jpg" -> loadJpegFile file
                      ".gif" -> loadGifFile  file
                      ".png" -> loadPngFile  file
+                     _      -> fail $ "unrecognised image format." ++ 
+                                      "supported: jpg, png, gif"
     (sizex, sizey) <- imageSize img
     let ratiox = fromIntegral sizex / 300.0
         ratioy = fromIntegral sizey / 300.0
@@ -109,16 +111,17 @@ makethumb file = do
     case t of ".jpg" -> saveJpegFile (-1) (fth file) img'
               ".png" -> savePngFile       (fth file) img'
               ".gif" -> saveGifFile       (fth file) img'
+              _      -> fail "this should never happen?"
 
 mkPost :: String -> Maybe String -> String -> String -> Post
 mkPost n f u t = Post { up_name = take 20 (filter isAscii n)
                       , file    = f
                       , up_time = read u
-                      , txt     = take 100 (filter isAscii t) }
+                      , txt     = take 500 (filter isAscii t) }
 
 overwriteConfig :: Handle -> HState -> IO ()
 overwriteConfig h cfg = do hSeek h AbsoluteSeek 0
-                           hPutStrLn h (show (expirethreads cfg 5))
+                           hPutStrLn h (show (expirethreads cfg 8))
                            hClose h
 
 validthread :: HState -> String -> Bool
@@ -127,6 +130,11 @@ validthread hst idx =
 
 expirethreads :: HState -> Int -> HState
 expirethreads hst n = hst { threads = take n (threads hst) }
+
+howmanyposts :: HState -> String -> Int
+howmanyposts hst idx = 
+    let thd = head $ filter (\th -> eyde th == read idx) (threads hst)
+    in length (posts thd)
 
 getFileType :: String -> IO String
 getFileType s = let fff = map toLower (reverse s) in
@@ -153,38 +161,40 @@ imgb = do
     name    <- liftM  (fromMaybe "Anonymous Hero") $ getInput "name"
     purge   <- liftM  (fromMaybe              "f") $ getInput "purge"
 
-    hst <- (case purge of 
-        "t" -> return $ HState "hImgB" []
-        _   -> liftM read (liftIO (hGetLine efile)))
+    hst   <- (case purge of 
+      "t" -> return $ HState "hImgB" []
+      _   -> liftM read (liftIO (hGetLine efile)))
     ftype <- liftIO (getFileType fname)
+    time  <- liftM show (liftIO epochTime)
 
     case null idx of
       True  -> do
         liftIO (hClose efile)
-        output $ prettyHtml $ fiatImgB hst
+        output $ showHtml $ renderimgb hst
+
       False ->
         case read idx of
-          1 -> 
-            if B.null bslfile 
+          1 ->
+            if B.null bslfile
               then fail "must supply image with new threads"
-              else do liftIO $ do 
-                        time <- liftM show epochTime
+              else do liftIO $ do
                         let img = "src/"++time++ftype
                         B.writeFile img bslfile
                         makethumb img
-                        let nt = newThread hst (mkPost 
+                        let nt = newThread hst (mkPost
                                   name (Just img) time text)
                         overwriteConfig efile nt
-                      output $ prettyHtml $ "Saved!"
+                      output $ showHtml $ "Saved!"
 
-          _ -> do liftIO $ do 
+          _ -> do liftIO $ do
                     unless (validthread hst idx) (fail
                       "that thread does not exist")
-                    time <- liftM show epochTime
-                    if B.null bslfile 
-                      then do when (null text) (fail 
+                    when (howmanyposts hst idx >= 20) (fail
+                      "that thread has already reached its limit")
+                    if B.null bslfile
+                      then do when (null text) (fail
                                 "reply with either an image or text or both")
-                              let nt = addPost' hst (read idx) (mkPost 
+                              let nt = addPost' hst (read idx) (mkPost
                                         name  Nothing  time  text)
                               overwriteConfig efile nt
                       else do let img = "src/"++time++ftype
@@ -193,4 +203,4 @@ imgb = do
                               let nt = addPost' hst (read idx) (mkPost
                                         name  (Just img) time  text)
                               overwriteConfig efile nt
-                  output $ prettyHtml $ "Saved!"
+                  output $ showHtml $ "Saved!"
