@@ -6,6 +6,7 @@ import Graphics.GD
 import Text.XHtml
 import qualified Data.ByteString.Lazy as B
 import Data.Maybe
+import Data.Char
 import System.Posix.Time
 import System.IO
 
@@ -46,7 +47,10 @@ addSagedPost hs idx po = hs { threads = map (\th ->
 
 formatImage :: Maybe String -> Html
 formatImage Nothing = noHtml
-formatImage (Just l)= lnk (image ! [src ("src/"++l++"s")]) ("src/"++l)
+formatImage (Just l)= lnk (image ! [src (fth l)]) (l)
+
+fth :: String -> String
+fth s = take (length s - 4) s ++ "s" ++ drop (length s - 4) s
 
 formatPost :: Post -> Html
 formatPost po = p (toHtml (replicate 70 '-')) +++
@@ -92,14 +96,46 @@ lnk txt hrf = anchor (toHtml txt) ! [href hrf]
 
 makethumb :: FilePath -> IO ()
 makethumb file = do
-    img <- loadJpegFile file
+    t <- getFileType file
+    img <- case t of ".jpg" -> loadJpegFile file
+                     ".gif" -> loadGifFile  file
+                     ".png" -> loadPngFile  file
     (sizex, sizey) <- imageSize img
     let ratiox = fromIntegral sizex / 300.0
         ratioy = fromIntegral sizey / 300.0
         ratio = max ratiox ratioy
     img' <- resizeImage (round (fromIntegral sizex / ratio))
                         (round (fromIntegral sizey / ratio)) img
-    saveJpegFile (-1) (file ++ "s") img'
+    case t of ".jpg" -> saveJpegFile (-1) (fth file) img'
+              ".png" -> savePngFile       (fth file) img'
+              ".gif" -> saveGifFile       (fth file) img'
+
+mkPost :: String -> Maybe String -> String -> String -> Post
+mkPost n f u t = Post { up_name = take 20 (filter isAscii n)
+                      , file    = f
+                      , up_time = read u
+                      , txt     = take 100 (filter isAscii t) }
+
+overwriteConfig :: Handle -> HState -> IO ()
+overwriteConfig h cfg = do hSeek h AbsoluteSeek 0
+                           hPutStrLn h (show (expirethreads cfg 5))
+                           hClose h
+
+validthread :: HState -> String -> Bool
+validthread hst idx = 
+    not $ null $ filter (\th -> eyde th == read idx) (threads hst)
+
+expirethreads :: HState -> Int -> HState
+expirethreads hst n = hst { threads = take n (threads hst) }
+
+getFileType :: String -> IO String
+getFileType s = let fff = map toLower (reverse s) in
+    return $ case fff of
+        ('g':'e':'p':'j':_) -> ".jpg"
+        ('g':'p':'j':_)     -> ".jpg"
+        ('f':'i':'g':_)     -> ".gif"
+        ('g':'n':'p':_)     -> ".png"
+        _                   -> fail "unknown file type"
 
 -- ------------------------------------------------------------------------
 
@@ -113,12 +149,14 @@ imgb = do
     idx     <- liftM  (fromMaybe               "") $ getInput "id"
     text    <- liftM  (fromMaybe        "silence") $ getInput "txt"
     bslfile <- liftM  (fromMaybe          B.empty) $ getInputFPS "upfile"
+    fname   <- liftM  (fromMaybe               "") $ getInputFilename "upfile"
     name    <- liftM  (fromMaybe "Anonymous Hero") $ getInput "name"
     purge   <- liftM  (fromMaybe              "f") $ getInput "purge"
 
     hst <- (case purge of 
-       "t" -> return $ HState "hImgB" []
-       _   -> liftM read (liftIO (hGetLine efile)))
+        "t" -> return $ HState "hImgB" []
+        _   -> liftM read (liftIO (hGetLine efile)))
+    ftype <- liftIO (getFileType fname)
 
     case null idx of
       True  -> do
@@ -131,36 +169,28 @@ imgb = do
               then fail "must supply image with new threads"
               else do liftIO $ do 
                         time <- liftM show epochTime
-                        let img = "src/"++time
+                        let img = "src/"++time++ftype
                         B.writeFile img bslfile
                         makethumb img
-                        let nt = newThread hst (
-                                   Post { up_name = name, file = Just time
-                                        , up_time = read time, txt = text } )
-                        hSeek efile AbsoluteSeek 0
-                        hPutStrLn efile (show nt)
-                        hClose efile
-                      output $ prettyHtml $ "Shaved!"
+                        let nt = newThread hst (mkPost 
+                                  name (Just img) time text)
+                        overwriteConfig efile nt
+                      output $ prettyHtml $ "Saved!"
 
-          _ -> do liftIO $ do -- replying to thread.
-                              -- warning: we assume idx a valid thread.
-                              -- fix this.
+          _ -> do liftIO $ do 
+                    unless (validthread hst idx) (fail
+                      "that thread does not exist")
                     time <- liftM show epochTime
                     if B.null bslfile 
                       then do when (null text) (fail 
                                 "reply with either an image or text or both")
-                              hSeek efile AbsoluteSeek 0
-                              hPutStrLn efile (show (addPost' hst (read idx) (
-                                Post { up_name = name, file = Nothing
-                                     , up_time = read time, txt = text })))
-                              hClose efile
-                      else do let img = "src/"++time
+                              let nt = addPost' hst (read idx) (mkPost 
+                                        name  Nothing  time  text)
+                              overwriteConfig efile nt
+                      else do let img = "src/"++time++ftype
                               B.writeFile img bslfile
                               makethumb img
-                              hSeek efile AbsoluteSeek 0
-                              hPutStrLn efile (show (addPost' hst (read idx) (
-                                Post { up_name = name, file = Just time
-                                     , up_time = read time, txt = text })))
-                              hClose efile
-                  output $ prettyHtml $ "Shaved!"
-
+                              let nt = addPost' hst (read idx) (mkPost
+                                        name  (Just img) time  text)
+                              overwriteConfig efile nt
+                  output $ prettyHtml $ "Saved!"
